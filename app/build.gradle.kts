@@ -20,7 +20,25 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // CI-only signing: point the debug build at an explicit keystore so the
+    // resulting APK carries the same certificate as the existing install and can
+    // update it in place. Inactive locally (no environment variable).
+    val ciKeystore = System.getenv("AIRSYNC_KEYSTORE")
+    signingConfigs {
+        if (ciKeystore != null) {
+            create("ci") {
+                storeFile = file(ciKeystore)
+                storePassword = System.getenv("AIRSYNC_KEYSTORE_PASSWORD") ?: "android"
+                keyAlias = System.getenv("AIRSYNC_KEY_ALIAS") ?: "androiddebugkey"
+                keyPassword = System.getenv("AIRSYNC_KEY_PASSWORD") ?: "android"
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfigs.findByName("ci")?.let { signingConfig = it }
+        }
 //        optimized dev build
 //           debug {
 //              isMinifyEnabled = true

@@ -60,20 +60,21 @@ jobs:
 
       # The APK must keep the same signing certificate as the build already
       # installed on the phone, otherwise Android refuses to update it in place.
-      # ANDROID_KEYSTORE_B64 is the base64 of ~/.android/debug.keystore, which is
-      # exactly what Gradle uses for the debug signing config by default.
+      # ANDROID_KEYSTORE_B64 is the base64 of the developer's debug keystore; the
+      # path is handed to Gradle explicitly via AIRSYNC_KEYSTORE (see
+      # app/build.gradle.kts) instead of relying on AGP's default lookup.
       - name: Restore signing key
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
         run: |
           set -euo pipefail
           if [ -n "${KEYSTORE_B64:-}" ]; then
-            mkdir -p "$HOME/.android"
-            printf '%s' "$KEYSTORE_B64" | base64 -d > "$HOME/.android/debug.keystore"
-            chmod 600 "$HOME/.android/debug.keystore"
-            keytool -list -keystore "$HOME/.android/debug.keystore" \
-              -storepass android -alias androiddebugkey > /dev/null
+            KS="$RUNNER_TEMP/airsync-debug.keystore"
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$KS"
+            chmod 600 "$KS"
+            keytool -list -keystore "$KS" -storepass android -alias androiddebugkey > /dev/null
             echo "Custom signing key restored"
+            echo "AIRSYNC_KEYSTORE=$KS" >> "$GITHUB_ENV"
           else
             echo "::warning::ANDROID_KEYSTORE_B64 is not set; the APK will be signed with a throwaway CI key and will not update the installed app in place"
           fi
@@ -104,6 +105,19 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "$APK"
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
           "$BT/apksigner" verify --print-certs "$APK" | grep -i "SHA-256"
+          # This is the certificate of the build installed on the phone. A
+          # mismatch means the APK would be rejected as an in-place update, so
+          # fail instead of publishing something unusable.
+          EXPECTED="bab12e50cd2d61cac87a6b77c23dcf823d0b8b057aca19f3f82d82aa3745f608"
+          ACTUAL="$("$BT/apksigner" verify --print-certs "$APK" \
+            | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)"
+          if [ -n "${AIRSYNC_KEYSTORE:-}" ]; then
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "::error::APK signer $ACTUAL does not match the expected $EXPECTED"
+              exit 1
+            fi
+            echo "Signer matches the installed build"
+          fi
           "$BT/aapt2" dump badging "$APK" | head -3 || true
           sha256sum "$APK" > SHA256SUMS-android.txt
           cat SHA256SUMS-android.txt
